@@ -41,6 +41,7 @@ type Task struct {
 	DeadLine time.Time
 	NMap     int
 	NReduce  int
+	FileName string
 }
 
 type ApplyForTaskArgs struct {

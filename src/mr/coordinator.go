@@ -37,7 +37,64 @@ func (c *Coordinator) getTaskLabel(tasktype string, taskid int) string {
 	return tasktype + "-" + strconv.Itoa(taskid)
 }
 
+func (c *Coordinator) cutover() {
+	c.lock.Lock()
+	if c.stage == MAP {
+		c.stage = REDUCE
+		for i := 0; i < c.nReduce; i++ {
+			c.tasks[c.getTaskLabel(REDUCE, i)] = Task{
+				TaskType: REDUCE,
+				TaskId:   i,
+				WorkerId: -1,
+				NReduce:  c.nReduce,
+				NMap:     c.nMap,
+			}
+			c.toDotask <- c.tasks[c.getTaskLabel(REDUCE, i)]
+		}
+	} else if c.stage == REDUCE {
+		c.stage = DONE
+		close(c.toDotask)
+	}
+	c.lock.Unlock()
+}
+
 func (c *Coordinator) ApplyForTask(args *ApplyForTaskArgs, reply *ApplyForTaskReply) error {
+
+	if c.stage == DONE {
+		return nil
+	}
+
+	if args.LastTaskId != -1 {
+		c.lock.Lock()
+		task := c.tasks[c.getTaskLabel(args.LastTaskType, args.LastTaskId)]
+		//!map reduce
+		if task.TaskType == MAP {
+			for i := 0; i < task.NReduce; i++ {
+				os.Rename(tmpOutMapFile(task.WorkerId, task.TaskId, i), finalOutMapFile(task.TaskId, i))
+			}
+		} else if task.TaskType == REDUCE {
+			os.Rename(tmpOutReduceFile(task.WorkerId, task.TaskId), finalOutReduceFile(task.TaskId))
+		}
+		delete(c.tasks, c.getTaskLabel(args.LastTaskType, args.LastTaskId))
+		c.lock.Unlock()
+	}
+
+	if len(c.tasks) == 0 {
+		c.cutover()
+	}
+
+	if c.stage == DONE {
+		return nil
+	}
+
+	task := <-c.toDotask
+	task.WorkerId = args.WorkerId
+	task.DeadLine = time.Now().Add(time.Second * 10)
+	reply.NMap = c.nMap
+	reply.NReduce = c.nReduce
+	reply.TaskId = task.TaskId
+	reply.TaskType = task.TaskType
+	reply.FileName = task.FileName
 	return nil
 }
 
@@ -88,7 +145,9 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 			WorkerId: -1,
 			NReduce:  nReduce,
 			NMap:     c.nMap,
+			FileName: files[i],
 		}
+		c.toDotask <- c.tasks[c.getTaskLabel(MAP, i)]
 	}
 	c.server()
 
@@ -99,7 +158,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 			c.lock.Lock()
 			for _, task := range c.tasks {
 				if task.WorkerId != -1 && task.TaskType != DONE && task.DeadLine.After(time.Now()) {
-					task.WorkerId = -1
+					task.WorkerId = -1 //!this is important,do you know
 					c.toDotask <- task
 					log.Printf("send task %v to dotask with timeout", task)
 				}
