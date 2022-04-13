@@ -1,0 +1,5 @@
+[user]
+	name = tk
+	email = 2774315388@qq.com
+[credential]
+	helper = "!f() { /root/.vscode-server/bin/8dfae7a5cd50421d10cd99cb873990460525a898/node /tmp/vscode-remote-containers-6f6c4f5a1a294709efe9189b9816e53fc2af0290.js $*; }; f"

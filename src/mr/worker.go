@@ -1,10 +1,15 @@
 package mr
 
-import "fmt"
-import "log"
-import "net/rpc"
-import "hash/fnv"
-
+import (
+	"fmt"
+	"hash/fnv"
+	"io/ioutil"
+	"log"
+	"net/rpc"
+	"os"
+	"sort"
+	"strings"
+)
 
 //
 // Map functions return a slice of KeyValue.
@@ -24,10 +29,94 @@ func ihash(key string) int {
 	return int(h.Sum32() & 0x7fffffff)
 }
 
+type ByKey []KeyValue
+
+// for sorting by key.
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
 
 //
 // main/mrworker.go calls this function.
 //
+func doMapTask(workerId int, taskId int, filename string, nReduce int, mapf func(string, string) []KeyValue) {
+	file, err := os.Open(filename)
+	if err != nil {
+		log.Fatalf("cannot open %v", filename)
+	}
+	content, err := ioutil.ReadAll(file)
+	if err != nil {
+		log.Fatalf("cannot read %v", filename)
+	}
+	file.Close()
+	kva := mapf(filename, string(content))
+	maphash := make(map[int][]KeyValue)
+	for _, kv := range kva {
+		i := ihash(kv.Key) % nReduce
+		maphash[i] = append(maphash[i], kv)
+	}
+	for i := 0; i < nReduce; i++ {
+		outfile := tmpOutMapFile(workerId, taskId, i)
+		file, err := os.Create(outfile)
+		if err != nil {
+			log.Fatalf("cannot create %v", outfile)
+		}
+		for _, kv := range maphash[i] {
+			fmt.Fprintf(file, "%v\t%v\n", kv.Key, kv.Value)
+		}
+		file.Close()
+	}
+	log.Printf("worker %v map task %v done", workerId, taskId)
+}
+
+func doReduceTask(workerId int, taskId int, nMap int, reducef func(string, []string) string) {
+	intermediate := []KeyValue{}
+	var kv_str_list []string
+	for i := 0; i < nMap; i++ {
+		filename := finalOutMapFile(i, taskId)
+		file, err := os.Open(filename)
+		if err != nil {
+			log.Fatalf("cannot open %v", filename)
+		}
+		content, err := ioutil.ReadAll(file)
+		if err != nil {
+			log.Fatalf("cannot read %v", filename)
+		}
+		file.Close()
+		kv_str_list = append(kv_str_list, strings.Split(string(content), "\n")...)
+	}
+	for _, kv_str := range kv_str_list {
+		if strings.TrimSpace(kv_str) == "" {
+			continue
+		}
+		kv := strings.Split(kv_str, "\t")
+		intermediate = append(intermediate, KeyValue{kv[0], kv[1]})
+	}
+
+	sort.Sort(ByKey(intermediate))
+
+	oname := tmpOutReduceFile(workerId, taskId)
+	ofile, _ := os.Create(oname)
+
+	i := 0
+	for i < len(intermediate) {
+		j := i + 1
+		for j < len(intermediate) && intermediate[j].Key == intermediate[i].Key {
+			j++
+		}
+		values := []string{}
+		for k := i; k < j; k++ {
+			values = append(values, intermediate[k].Value)
+		}
+		output := reducef(intermediate[i].Key, values)
+		fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, output)
+		i = j
+	}
+
+	ofile.Close()
+	log.Printf("worker %v reduce task %v done", workerId, taskId)
+}
+
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
@@ -35,7 +124,31 @@ func Worker(mapf func(string, string) []KeyValue,
 
 	// uncomment to send the Example RPC to the coordinator.
 	// CallExample()
-
+	//!we only do tmp thing here,do you know
+	WorkerId := os.Getpid()
+	LastTaskId := -1
+	LastTaskType := ""
+	for {
+		args := ApplyForTaskArgs{
+			WorkerId:     WorkerId,
+			LastTaskId:   LastTaskId,
+			LastTaskType: LastTaskType,
+		}
+		reply := ApplyForTaskReply{}
+		call("Coordinator.ApplyForTask", &args, &reply) //!many worker may call the Coordinator.ApplyForTask,so lock is important
+		switch reply.TaskType {
+		case MAP:
+			doMapTask(WorkerId, reply.TaskId, reply.FileName, reply.NReduce, mapf)
+		case REDUCE:
+			doReduceTask(WorkerId, reply.TaskId, reply.NMap, reducef)
+		case DONE:
+			goto END
+		}
+		LastTaskId = reply.TaskId
+		LastTaskType = reply.TaskType
+	}
+END:
+	log.Printf("worker %v exit", WorkerId)
 }
 
 //
