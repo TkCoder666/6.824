@@ -38,7 +38,6 @@ func (c *Coordinator) getTaskLabel(tasktype string, taskid int) string {
 }
 
 func (c *Coordinator) cutover() {
-	c.lock.Lock()
 	if c.stage == MAP {
 		c.stage = REDUCE
 		for i := 0; i < c.nReduce; i++ {
@@ -55,14 +54,9 @@ func (c *Coordinator) cutover() {
 		c.stage = DONE
 		close(c.toDotask)
 	}
-	c.lock.Unlock()
 }
 
 func (c *Coordinator) ApplyForTask(args *ApplyForTaskArgs, reply *ApplyForTaskReply) error {
-
-	if c.stage == DONE {
-		return nil
-	}
 
 	if args.LastTaskId != -1 {
 		c.lock.Lock()
@@ -70,26 +64,42 @@ func (c *Coordinator) ApplyForTask(args *ApplyForTaskArgs, reply *ApplyForTaskRe
 		//!map reduce
 		if task.TaskType == MAP {
 			for i := 0; i < task.NReduce; i++ {
-				os.Rename(tmpOutMapFile(task.WorkerId, task.TaskId, i), finalOutMapFile(task.TaskId, i))
+				err := os.Rename(tmpOutMapFile(task.WorkerId, task.TaskId, i), finalOutMapFile(task.TaskId, i))
+				if err != nil {
+					log.Printf("no such tmp file: %v", tmpOutMapFile(task.WorkerId, task.TaskId, i))
+				}
 			}
 		} else if task.TaskType == REDUCE {
-			os.Rename(tmpOutReduceFile(task.WorkerId, task.TaskId), finalOutReduceFile(task.TaskId))
+			err := os.Rename(tmpOutReduceFile(task.WorkerId, task.TaskId), finalOutReduceFile(task.TaskId))
+			if err != nil {
+				log.Printf("no such tmp file: %v", tmpOutReduceFile(task.WorkerId, task.TaskId))
+			}
+			//remove finalOutMapFile
+			for i := 0; i < task.NMap; i++ {
+				err := os.Remove(finalOutMapFile(i, task.TaskId))
+				if err != nil {
+					log.Printf("no such file: %v", finalOutMapFile(i, task.TaskId))
+				}
+			}
 		}
 		delete(c.tasks, c.getTaskLabel(args.LastTaskType, args.LastTaskId))
+		//!this is right,do you know
+		if len(c.tasks) == 0 {
+			c.cutover()
+		}
 		c.lock.Unlock()
 	}
 
-	if len(c.tasks) == 0 {
-		c.cutover()
-	}
-
-	if c.stage == DONE {
+	task, ok := <-c.toDotask
+	if !ok {
 		return nil
 	}
-
-	task := <-c.toDotask
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	//!wrong here
 	task.WorkerId = args.WorkerId
 	task.DeadLine = time.Now().Add(time.Second * 10)
+	c.tasks[c.getTaskLabel(task.TaskType, task.TaskId)] = task
 	reply.NMap = c.nMap
 	reply.NReduce = c.nReduce
 	reply.TaskId = task.TaskId
@@ -119,8 +129,9 @@ func (c *Coordinator) server() {
 // if the entire job has finished.
 //
 func (c *Coordinator) Done() bool {
-	ret := false
-	ret = (c.stage == DONE)
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	ret := (c.stage == DONE)
 	return ret
 }
 
@@ -138,6 +149,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		toDotask: make(chan Task, int(math.Max(float64(len(files)), float64(nReduce)))),
 		tasks:    make(map[string]Task),
 	}
+	log.Printf("begin to make coordinator")
 	for i := 0; i < c.nMap; i++ {
 		c.tasks[c.getTaskLabel(MAP, i)] = Task{
 			TaskType: MAP,
@@ -148,6 +160,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 			FileName: files[i],
 		}
 		c.toDotask <- c.tasks[c.getTaskLabel(MAP, i)]
+		// log.Printf("make task %s", c.getTaskLabel(MAP, i))
 	}
 	c.server()
 
@@ -157,7 +170,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 			time.Sleep(500 * time.Millisecond)
 			c.lock.Lock()
 			for _, task := range c.tasks {
-				if task.WorkerId != -1 && task.TaskType != DONE && task.DeadLine.After(time.Now()) {
+				if task.WorkerId != -1 && task.TaskType != DONE && time.Now().After(task.DeadLine) {
 					task.WorkerId = -1 //!this is important,do you know
 					c.toDotask <- task
 					log.Printf("send task %v to dotask with timeout", task)

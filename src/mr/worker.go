@@ -66,7 +66,7 @@ func doMapTask(workerId int, taskId int, filename string, nReduce int, mapf func
 		}
 		file.Close()
 	}
-	log.Printf("worker %v map task %v done", workerId, taskId)
+
 }
 
 func doReduceTask(workerId int, taskId int, nMap int, reducef func(string, []string) string) {
@@ -96,8 +96,10 @@ func doReduceTask(workerId int, taskId int, nMap int, reducef func(string, []str
 	sort.Sort(ByKey(intermediate))
 
 	oname := tmpOutReduceFile(workerId, taskId)
-	ofile, _ := os.Create(oname)
-
+	ofile, err := os.Create(oname)
+	if err != nil {
+		log.Fatalf("cannot create %v", oname)
+	}
 	i := 0
 	for i < len(intermediate) {
 		j := i + 1
@@ -114,7 +116,7 @@ func doReduceTask(workerId int, taskId int, nMap int, reducef func(string, []str
 	}
 
 	ofile.Close()
-	log.Printf("worker %v reduce task %v done", workerId, taskId)
+
 }
 
 func Worker(mapf func(string, string) []KeyValue,
@@ -135,17 +137,24 @@ func Worker(mapf func(string, string) []KeyValue,
 			LastTaskType: LastTaskType,
 		}
 		reply := ApplyForTaskReply{}
-		call("Coordinator.ApplyForTask", &args, &reply) //!many worker may call the Coordinator.ApplyForTask,so lock is important
+		ok := call("Coordinator.ApplyForTask", &args, &reply) //!many worker may call the Coordinator.ApplyForTask,so lock is important
+		if !ok {
+			goto END
+		}
+
 		switch reply.TaskType {
 		case MAP:
 			doMapTask(WorkerId, reply.TaskId, reply.FileName, reply.NReduce, mapf)
+			// log.Printf("worker %v map task %v done", WorkerId, reply.TaskId)
 		case REDUCE:
 			doReduceTask(WorkerId, reply.TaskId, reply.NMap, reducef)
+			// log.Printf("worker %v reduce task %v done", WorkerId, reply.TaskId)
 		case DONE:
 			goto END
 		}
 		LastTaskId = reply.TaskId
 		LastTaskType = reply.TaskType
+		// log.Printf("worker %v for another task", WorkerId)
 	}
 END:
 	log.Printf("worker %v exit", WorkerId)

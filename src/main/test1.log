@@ -1,0 +1,13 @@
+
+*** Starting wc test.
+unexpected EOF
+unexpected EOF
+unexpected EOF
+--- wc output is not the same as mr-correct-wc.txt
+--- wc test: FAIL
+*** Starting wc test.
+unexpected EOF
+unexpected EOF
+unexpected EOF
+--- wc output is not the same as mr-correct-wc.txt
+--- wc test: FAIL
