@@ -54,6 +54,7 @@ type ApplyMsg struct {
 
 type LogEntry struct {
 	Term    int
+	Index   int
 	Command interface{}
 }
 
@@ -71,7 +72,7 @@ type Raft struct {
 	persister *Persister          // Object to hold this peer's persisted state
 	me        int                 // this peer's index into peers[]
 	dead      int32               // set by Kill()
-
+	applyCh   chan ApplyMsg
 	VoteCount int
 	Stage     int
 	//Persistent state
@@ -339,13 +340,26 @@ func (rf *Raft) sendAppendEntries(server int, args *RequestAppendEntriesArgs, re
 // term. the third return value is true if this server believes it is
 // the leader.
 //
+func (rf *Raft) AppendLogEntry(command interface{}) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	if rf.Stage != LEADER {
+		return
+	}
+	rf.Log = append(rf.Log, LogEntry{Term: rf.CurrentTerm, Command: command, Index: len(rf.Log)})
+	rf.NextIndex[rf.me] = len(rf.Log) //TODO: check if this is correct
+	rf.MatchIndex[rf.me] = len(rf.Log) - 1
+	rf.ResetElectionTimer()
+}
+
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := true
-
-	// Your code here (2B).
-
+	//TODO:for lab 2B
+	index := len(rf.Log) - 1
+	term := rf.CurrentTerm
+	isLeader := (rf.Stage == LEADER)
+	if isLeader {
+		go rf.AppendLogEntry(command)
+	}
 	return index, term, isLeader
 }
 
@@ -371,7 +385,6 @@ func (rf *Raft) killed() bool {
 }
 
 func random(min, max int) int {
-	//TODO:用均匀分布可能会更好一点
 	return rand.Intn(max-min) + min
 }
 
@@ -428,7 +441,26 @@ func (rf *Raft) IsTimeout() bool {
 	return time.Now().After(rf.DeadLine)
 }
 
-func (rf *Raft) SendEmptyAppendEntries() {
+func (rf *Raft) BroadcastAppendEntries() {
+	sending_entries := []LogEntry{}
+	empty_flag := true
+	target_nextindex := -1
+	rf.mu.Lock()
+	for i := 0; i < len(rf.peers); i++ {
+		if i == rf.me {
+			continue
+		}
+		if len(rf.Log)-1 >= rf.NextIndex[i] {
+			empty_flag = false
+			if rf.NextIndex[i] > target_nextindex {
+				target_nextindex = rf.NextIndex[i]
+			}
+		}
+	}
+	if !empty_flag {
+		sending_entries = rf.Log[target_nextindex:]
+	}
+	rf.mu.Unlock()
 	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
 			continue
@@ -438,9 +470,9 @@ func (rf *Raft) SendEmptyAppendEntries() {
 			rf.sendAppendEntries(server, &RequestAppendEntriesArgs{
 				Term:         rf.CurrentTerm,
 				LeaderId:     rf.me,
-				PrevLogIndex: len(rf.Log) - 1,
-				PrevLogTerm:  rf.GetLogEnrtyTerm(len(rf.Log) - 1),
-				Entries:      nil,
+				PrevLogIndex: target_nextindex - 1,
+				PrevLogTerm:  rf.GetLogEnrtyTerm(target_nextindex - 1),
+				Entries:      sending_entries,
 				LeaderCommit: rf.CommitIndex,
 			}, reply)
 		}(i)
@@ -452,7 +484,7 @@ func (rf *Raft) HeartBeat() {
 		if rf.killed() || rf.Stage != LEADER {
 			return
 		}
-		rf.SendEmptyAppendEntries()
+		rf.BroadcastAppendEntries()
 		time.Sleep(time.Millisecond * 200)
 	}
 }
@@ -464,6 +496,16 @@ func (rf *Raft) ticker() {
 	for !rf.killed() {
 		// Your code here to check if a leader election should
 		// be started and to randomize sleeping time using
+		rf.mu.Lock()
+		for rf.CommitIndex > rf.LastApplied { //!apply all logs
+			rf.LastApplied++
+			rf.applyCh <- ApplyMsg{
+				CommandValid: true,
+				Command:      rf.Log[rf.LastApplied].Command,
+				CommandIndex: rf.LastApplied,
+			}
+		}
+		rf.mu.Unlock()
 		switch rf.Stage {
 		case FOLLOWER:
 			if rf.IsTimeout() {
@@ -473,7 +515,10 @@ func (rf *Raft) ticker() {
 		case CANDIDATE:
 			if rf.VoteCount > len(rf.peers)/2 {
 				DPrintf(0, "%d become leader", rf.me)
+				rf.mu.Lock()
 				rf.Stage = LEADER
+				rf.InitNextAndMatchIndex()
+				rf.mu.Unlock()
 				go rf.HeartBeat()
 			}
 			if rf.IsTimeout() {
@@ -506,6 +551,12 @@ func (rf *Raft) ticker() {
 // 	MatchIndex []int
 
 // 	Isleader bool
+func (rf *Raft) InitNextAndMatchIndex() {
+	for i := 0; i < len(rf.peers); i++ {
+		rf.NextIndex[i] = len(rf.Log)
+		rf.MatchIndex[i] = -1
+	}
+}
 
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
@@ -513,7 +564,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
-
+	rf.applyCh = applyCh
 	// Your initialization code here (2A, 2B, 2C).
 	rf.CurrentTerm = 0
 	rf.Stage = FOLLOWER
@@ -521,7 +572,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	//Log
 	rf.CommitIndex = -1
 	rf.LastApplied = -1
-	//rf.NextIndex
+	rf.NextIndex = make([]int, len(peers)) //TODO:this one is on leader
+	rf.MatchIndex = make([]int, len(peers))
+	rf.InitNextAndMatchIndex()
 	//rf.MatchIndex
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
