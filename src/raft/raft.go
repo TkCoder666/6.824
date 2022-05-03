@@ -64,24 +64,25 @@ type AppendEntries struct {
 }
 
 type AppendEntriesRpc struct {
-	args  *RequestAppendEntriesArgs
-	reply *RequestAppendEntriesReply
+	ServerId int
+	Args     *RequestAppendEntriesArgs
+	Reply    *RequestAppendEntriesReply
 }
 
 //
 // A Go object implementing a single Raft peer.
 //
 type Raft struct {
-	mu                   sync.Mutex          // Lock to protect shared access to this peer's state
-	peers                []*labrpc.ClientEnd // RPC end points of all peers
-	persister            *Persister          // Object to hold this peer's persisted state
-	me                   int                 // this peer's index into peers[]
-	dead                 int32               // set by Kill()
-	applyCh              chan ApplyMsg
-	VoteReplyCh          chan *RequestVoteReply
-	AppendEntriesReplyCh chan *RequestAppendEntriesReply
-	VoteCount            int
-	Stage                int
+	mu                 sync.Mutex          // Lock to protect shared access to this peer's state
+	peers              []*labrpc.ClientEnd // RPC end points of all peers
+	persister          *Persister          // Object to hold this peer's persisted state
+	me                 int                 // this peer's index into peers[]
+	dead               int32               // set by Kill()
+	applyCh            chan ApplyMsg
+	VoteReplyCh        chan *RequestVoteReply
+	AppendEntriesRpcCh chan AppendEntriesRpc
+	VoteCount          int
+	Stage              int
 	//Persistent state
 	CurrentTerm int //!first initialize to -1
 	VotedFor    int
@@ -109,9 +110,8 @@ type RequestAppendEntriesArgs struct {
 
 type RequestAppendEntriesReply struct {
 	// Your data here (2A).\
-	Term     int
-	Success  bool
-	ServerId int
+	Term    int
+	Success bool
 }
 
 // func (rf *Raft) TimerInvalid() {
@@ -123,7 +123,6 @@ func (rf *Raft) RequestAppendEntries(args *RequestAppendEntriesArgs, reply *Requ
 	defer rf.mu.Unlock()
 	rf.ToFollowerCheck(args.Term)
 	reply.Term = rf.CurrentTerm
-	reply.ServerId = rf.me
 	if args.Term < rf.CurrentTerm {
 		reply.Success = false
 		return
@@ -330,7 +329,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 
 func (rf *Raft) sendAppendEntries(server int, args *RequestAppendEntriesArgs, reply *RequestAppendEntriesReply) bool {
 	ok := rf.peers[server].Call("Raft.RequestAppendEntries", args, reply)
-	rf.AppendEntriesReplyCh <- reply
+	rf.AppendEntriesRpcCh <- AppendEntriesRpc{Reply: reply, Args: args, ServerId: server}
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	rf.ToFollowerCheck(reply.Term)
@@ -365,7 +364,7 @@ func (rf *Raft) AppendLogEntry(command interface{}) {
 
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	//TODO:for lab 2B
-	index := len(rf.Log) - 1
+	index := len(rf.Log)
 	term := rf.CurrentTerm
 	isLeader := (rf.Stage == LEADER)
 	if isLeader {
@@ -407,8 +406,8 @@ const (
 
 func (rf *Raft) GetLogEnrtyTerm(index int) int {
 	if index >= len(rf.Log) {
-		panic("index out of range")
-	} else if len(rf.Log) == 0 {
+		panic("index out of range,do you know")
+	} else if len(rf.Log) == 1 || index < 1 {
 		return rf.CurrentTerm
 	}
 	return rf.Log[index].Term
@@ -450,7 +449,7 @@ func (rf *Raft) IsTimeout() bool {
 func (rf *Raft) SendAppendEntriesToServer(server int) {
 	sending_entries := []LogEntry{}
 	empty_flag := true
-	target_nextindex := -1
+	target_nextindex := 0 //!note here be 0
 	rf.mu.Lock()
 	if len(rf.Log)-1 >= rf.NextIndex[server] {
 		empty_flag = false
@@ -514,32 +513,62 @@ func (rf *Raft) DealVoteReply() {
 }
 
 func (rf *Raft) DealAppendEntriesReply() {
-	for len(rf.AppendEntriesReplyCh) > 0 {
-		<-rf.AppendEntriesReplyCh //!first we should empty channel
+	for len(rf.AppendEntriesRpcCh) > 0 {
+		<-rf.AppendEntriesRpcCh //!first we should empty channel
 	}
 	go func() {
 		for {
 			if rf.killed() || rf.Stage != LEADER {
 				return
 			}
-			if len(rf.AppendEntriesReplyCh) == 0 {
+			if len(rf.AppendEntriesRpcCh) == 0 {
 				continue
 			}
-			// reply := <-rf.AppendEntriesReplyCh
-			// if reply.Success {
-			// 	rf.mu.Lock()
-			// 	//TODO:how to deal with it
-			// 	//!ADD more variable to reply,do you know
-			// 	rf.NextIndex[reply.ServerId] = reply.NextIndex
-			// 	rf.MatchIndex[reply.ServerId] = reply.NextIndex - 1
-			// 	rf.mu.Unlock()
-			// } else {
-			// 	rf.mu.Lock()
-			// 	rf.NextIndex[reply.ServerId]--
-			// 	rf.mu.Unlock()
-			// }
+			rpc_enrty := <-rf.AppendEntriesRpcCh
+			args := rpc_enrty.Args
+			reply := rpc_enrty.Reply
+			serverId := rpc_enrty.ServerId
+			if reply.Success {
+				rf.mu.Lock()
+				rf.MatchIndex[serverId] = args.PrevLogIndex + len(args.Entries)
+				rf.NextIndex[serverId] = rf.MatchIndex[serverId] + 1
+				rf.mu.Unlock()
+			} else {
+				rf.mu.Lock()
+				if rf.NextIndex[serverId] > 1 {
+					rf.NextIndex[serverId]--
+				}
+				rf.mu.Unlock()
+			}
 		}
 	}()
+}
+func (rf *Raft) LeaderUpdateCommitIndex() {
+	for {
+		if rf.killed() || rf.Stage != LEADER {
+			return
+		}
+		rf.mu.Lock()
+		N := len(rf.Log) - 1
+		for N > rf.CommitIndex {
+			count := 1
+			for i := 0; i < len(rf.peers); i++ {
+				if i == rf.me {
+					continue
+				}
+				if rf.MatchIndex[i] >= N {
+					count++
+				}
+			}
+			if count > len(rf.peers)/2 && rf.Log[N].Term == rf.CurrentTerm {
+				rf.CommitIndex = N
+				break
+			}
+			N--
+		}
+		rf.mu.Unlock()
+		time.Sleep(time.Millisecond * 100)
+	}
 }
 
 // The ticker go routine starts a new election if this peer hasn't received
@@ -574,7 +603,9 @@ func (rf *Raft) ticker() {
 				rf.Stage = LEADER
 				rf.InitNextAndMatchIndex()
 				rf.mu.Unlock()
+				go rf.DealAppendEntriesReply()
 				go rf.HeartBeat()
+				go rf.LeaderUpdateCommitIndex()
 			}
 			if rf.IsTimeout() {
 				rf.StartElection()
@@ -608,8 +639,8 @@ func (rf *Raft) ticker() {
 // 	Isleader bool
 func (rf *Raft) InitNextAndMatchIndex() {
 	for i := 0; i < len(rf.peers); i++ {
-		rf.NextIndex[i] = len(rf.Log)
-		rf.MatchIndex[i] = -1
+		rf.NextIndex[i] = len(rf.Log) //!>=0
+		rf.MatchIndex[i] = 0
 	}
 }
 
@@ -621,19 +652,20 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 	rf.applyCh = applyCh
 	//make(chan Task, int(math.Max(float64(len(files)), float64(nReduce))))
-	rf.AppendEntriesReplyCh = make(chan *RequestAppendEntriesReply, len(rf.peers))
+	rf.AppendEntriesRpcCh = make(chan AppendEntriesRpc, len(rf.peers))
 	rf.VoteReplyCh = make(chan *RequestVoteReply, len(rf.peers))
 	// Your initialization code here (2A, 2B, 2C).
 	rf.CurrentTerm = 0
 	rf.Stage = FOLLOWER
 	rf.VotedFor = -1
+
+	rf.Log = append(rf.Log, LogEntry{Term: 0, Command: nil, Index: 0}) //ADD dummpy log
 	//Log
-	rf.CommitIndex = -1
-	rf.LastApplied = -1
+	rf.CommitIndex = 0
+	rf.LastApplied = 0
 	rf.NextIndex = make([]int, len(peers)) //TODO:this one is on leader
 	rf.MatchIndex = make([]int, len(peers))
 	rf.InitNextAndMatchIndex()
-	//rf.MatchIndex
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
