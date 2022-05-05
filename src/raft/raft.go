@@ -112,6 +112,7 @@ type RequestAppendEntriesReply struct {
 	// Your data here (2A).\
 	Term    int
 	Success bool
+	Reach   bool
 }
 
 // func (rf *Raft) TimerInvalid() {
@@ -119,10 +120,17 @@ type RequestAppendEntriesReply struct {
 // }
 
 func (rf *Raft) RequestAppendEntries(args *RequestAppendEntriesArgs, reply *RequestAppendEntriesReply) {
+	reply.Reach = true
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	rf.ToFollowerCheck(args.Term)
 	reply.Term = rf.CurrentTerm
+	if len(args.Entries) > 0 {
+		DPrintf(0, "Server %d receive entries with rf.CurrentTerm %v len(rf.Log) %v rf.GetLogEnrtyTerm(args.PrevLogIndex) %v and args %v", rf.me, rf.CurrentTerm, len(rf.Log), rf.GetLogEnrtyTerm(args.PrevLogIndex), args)
+	}
+	//"Server 1 receive entries with rf.CurrentTerm 5 len(rf.Log) 2 rf.GetLogEnrtyTerm(args.PrevLogIndex) 1
+	//and args &{1 0 1 1 [{1 2 102} {1 3 103} {1 4 104} {1 5 105} {1 6 106}] 5}"
+	//"so why become 5 here,fuck...."
 	if args.Term < rf.CurrentTerm {
 		reply.Success = false
 		return
@@ -357,16 +365,18 @@ func (rf *Raft) AppendLogEntry(command interface{}) {
 		return
 	}
 	rf.Log = append(rf.Log, LogEntry{Term: rf.CurrentTerm, Command: command, Index: len(rf.Log)})
-	rf.NextIndex[rf.me] = len(rf.Log) //TODO: check if this is correct
+	rf.NextIndex[rf.me] = len(rf.Log) //TODO:leader's is right
 	rf.MatchIndex[rf.me] = len(rf.Log) - 1
 	rf.ResetElectionTimer()
 }
 
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	//TODO:for lab 2B
+	rf.mu.Lock()
 	index := len(rf.Log)
 	term := rf.CurrentTerm
 	isLeader := (rf.Stage == LEADER)
+	rf.mu.Unlock()
 	if isLeader {
 		go rf.AppendLogEntry(command)
 	}
@@ -438,7 +448,7 @@ func (rf *Raft) StartElection() {
 }
 
 func (rf *Raft) ResetElectionTimer() {
-	timeout := time.Millisecond * time.Duration(random(350, 1000))
+	timeout := time.Millisecond * time.Duration(random(ElectionTimeoutMin, ElectionTimeoutMax))
 	rf.DeadLine = time.Now().Add(timeout)
 }
 
@@ -448,18 +458,17 @@ func (rf *Raft) IsTimeout() bool {
 
 func (rf *Raft) SendAppendEntriesToServer(server int) {
 	sending_entries := []LogEntry{}
-	empty_flag := true
 	target_nextindex := 0 //!note here be 0
 	rf.mu.Lock()
-	if len(rf.Log)-1 >= rf.NextIndex[server] {
-		empty_flag = false
-		target_nextindex = rf.NextIndex[server]
-	}
-	if !empty_flag {
-		sending_entries = rf.Log[target_nextindex:]
-	}
+	target_nextindex = rf.NextIndex[server]
+	//TODO:have not enter here,fuck
+	sending_entries = rf.Log[target_nextindex:]
+	// }
 	rf.mu.Unlock()
-	reply := &RequestAppendEntriesReply{}
+	reply := &RequestAppendEntriesReply{Reach: false}
+	// if server == (rf.me+1)%len(rf.peers) && len(sending_entries) > 0 {
+	// 	DPrintf(0, "%d send to disconnected server %d,nextindex:%d,len:%d,entries:%v", rf.me, server, target_nextindex, len(sending_entries), sending_entries)
+	// }
 	go rf.sendAppendEntries(server, &RequestAppendEntriesArgs{
 		Term:         rf.CurrentTerm,
 		LeaderId:     rf.me,
@@ -486,7 +495,7 @@ func (rf *Raft) HeartBeat() {
 			return
 		}
 		rf.BroadcastAppendEntries()
-		time.Sleep(time.Millisecond * 200)
+		time.Sleep(time.Millisecond * HeartBeatInterval)
 	}
 }
 
@@ -508,6 +517,7 @@ func (rf *Raft) DealVoteReply() {
 				rf.VoteCount++
 				rf.mu.Unlock()
 			}
+			time.Sleep(time.Millisecond * 10)
 		}
 	}()
 }
@@ -535,11 +545,17 @@ func (rf *Raft) DealAppendEntriesReply() {
 				rf.mu.Unlock()
 			} else {
 				rf.mu.Lock()
-				if rf.NextIndex[serverId] > 1 {
+				if rf.NextIndex[serverId] > 1 && reply.Reach { //!wrong here
 					rf.NextIndex[serverId]--
 				}
 				rf.mu.Unlock()
 			}
+			if len(args.Entries) > 0 {
+				DPrintf(0, "%d send entries to %d with Term %v begin index %v len %v and entries %v", rf.me, serverId, rf.CurrentTerm, args.PrevLogIndex+1, len(args.Entries), args.Entries)
+				DPrintf(0, "%d deal append entries reply from %d with Success %v and len %v ", rf.me, serverId, reply.Success, len(args.Entries))
+				DPrintf(0, "MatchIndex %v NextIndex %v", rf.MatchIndex, rf.NextIndex)
+			}
+			time.Sleep(time.Millisecond * 10)
 		}
 	}()
 }
