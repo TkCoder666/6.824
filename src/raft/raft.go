@@ -125,12 +125,9 @@ func (rf *Raft) RequestAppendEntries(args *RequestAppendEntriesArgs, reply *Requ
 	defer rf.mu.Unlock()
 	rf.ToFollowerCheck(args.Term)
 	reply.Term = rf.CurrentTerm
-	if len(args.Entries) > 0 {
+	if len(args.Entries) > 0 && args.PrevLogIndex < len(rf.Log) {
 		DPrintf(0, "Server %d receive entries with rf.CurrentTerm %v len(rf.Log) %v rf.GetLogEnrtyTerm(args.PrevLogIndex) %v and args %v", rf.me, rf.CurrentTerm, len(rf.Log), rf.GetLogEnrtyTerm(args.PrevLogIndex), args)
 	}
-	//"Server 1 receive entries with rf.CurrentTerm 5 len(rf.Log) 2 rf.GetLogEnrtyTerm(args.PrevLogIndex) 1
-	//and args &{1 0 1 1 [{1 2 102} {1 3 103} {1 4 104} {1 5 105} {1 6 106}] 5}"
-	//"so why become 5 here,fuck...."
 	if args.Term < rf.CurrentTerm {
 		reply.Success = false
 		return
@@ -139,7 +136,7 @@ func (rf *Raft) RequestAppendEntries(args *RequestAppendEntriesArgs, reply *Requ
 			reply.Success = false
 			return
 		} else {
-			if rf.GetLogEnrtyTerm(args.PrevLogIndex) != args.PrevLogTerm { //TODO:修改这里应对一开始log为空的情况
+			if rf.GetLogEnrtyTerm(args.PrevLogIndex) != args.PrevLogTerm { //TODO:error for GetLogEnrtyTerm but it's strange
 				reply.Success = false
 				return
 			} else {
@@ -264,7 +261,7 @@ type RequestVoteReply struct {
 
 func (rf *Raft) ToFollowerCheck(term int) {
 	if term > rf.CurrentTerm {
-		DPrintf(1, "%d ToFollowerCheck %d", rf.me, term)
+		DPrintf(0, "%d ToFollowerCheck %d", rf.me, term)
 		rf.CurrentTerm = term
 		rf.VotedFor = -1
 		rf.Stage = FOLLOWER
@@ -282,16 +279,16 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.ToFollowerCheck(args.Term)
 	reply.Term = rf.CurrentTerm
 	reply.VoteGranted = false
-	DPrintf(2, "RequestVote: server %d, with term %d, %d, %d", rf.me, rf.CurrentTerm, args.CandidateId, args.Term)
+	DPrintf(1, "rf.VotedFor %v rf.CurrentTerm %v len(rf.Log) %v args.Term %v args.CandidateId %v args.LastLogTerm %v args.LastLogIndex %v",
+		rf.VotedFor, rf.CurrentTerm, len(rf.Log), args.Term, args.CandidateId, args.LastLogTerm, args.LastLogIndex)
 	if args.Term < rf.CurrentTerm {
 		return
 	}
 	if rf.VotedFor == -1 || rf.VotedFor == args.CandidateId {
-		if args.LastLogTerm >= rf.CurrentTerm && args.LastLogIndex >= len(rf.Log)-1 {
-			//! this means the candidate is up to date
+		if args.LastLogTerm >= rf.GetLogEnrtyTerm(len(rf.Log)-1) && args.LastLogIndex >= len(rf.Log)-1 {
 			rf.VotedFor = args.CandidateId
 			reply.VoteGranted = true
-			DPrintf(1, "%d vote for %d, %t", rf.me, args.CandidateId, reply.VoteGranted)
+			DPrintf(0, "%d vote for %d, %t", rf.me, args.CandidateId, reply.VoteGranted)
 			rf.ResetElectionTimer()
 		}
 	}
@@ -328,19 +325,19 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 //
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
-	rf.VoteReplyCh <- reply
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
 	rf.ToFollowerCheck(reply.Term)
+	rf.mu.Unlock()
+	rf.VoteReplyCh <- reply
 	return ok
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *RequestAppendEntriesArgs, reply *RequestAppendEntriesReply) bool {
 	ok := rf.peers[server].Call("Raft.RequestAppendEntries", args, reply)
-	rf.AppendEntriesRpcCh <- AppendEntriesRpc{Reply: reply, Args: args, ServerId: server}
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
 	rf.ToFollowerCheck(reply.Term)
+	rf.mu.Unlock()
+	rf.AppendEntriesRpcCh <- AppendEntriesRpc{Reply: reply, Args: args, ServerId: server}
 	return ok
 }
 
@@ -417,14 +414,14 @@ const (
 func (rf *Raft) GetLogEnrtyTerm(index int) int {
 	if index >= len(rf.Log) {
 		panic("index out of range,do you know")
-	} else if len(rf.Log) == 1 || index < 1 {
+	} else if len(rf.Log) == LogEmptyLen || index <= LogEmptyIndex {
 		return rf.CurrentTerm
 	}
 	return rf.Log[index].Term
 }
 
 func (rf *Raft) StartElection() {
-	DPrintf(1, "%d start election", rf.me)
+	DPrintf(0, "%d start election", rf.me)
 	rf.mu.Lock()
 	rf.VoteCount = 1
 	rf.CurrentTerm++
@@ -458,10 +455,9 @@ func (rf *Raft) IsTimeout() bool {
 
 func (rf *Raft) SendAppendEntriesToServer(server int) {
 	sending_entries := []LogEntry{}
-	target_nextindex := 0 //!note here be 0
+	target_nextindex := 0
 	rf.mu.Lock()
 	target_nextindex = rf.NextIndex[server]
-	//TODO:have not enter here,fuck
 	sending_entries = rf.Log[target_nextindex:]
 	// }
 	rf.mu.Unlock()
