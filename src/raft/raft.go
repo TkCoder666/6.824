@@ -285,7 +285,16 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		return
 	}
 	if rf.VotedFor == -1 || rf.VotedFor == args.CandidateId {
-		if args.LastLogTerm > rf.GetLogEnrtyTerm(len(rf.Log)-1) || (args.LastLogTerm == rf.GetLogEnrtyTerm(len(rf.Log)-1) && args.LastLogIndex >= len(rf.Log)-1) {
+		up_to_date_flag := false
+		LastLogTerm := rf.GetLogEnrtyTerm(len(rf.Log) - 1)
+		if args.LastLogTerm > LastLogTerm {
+			up_to_date_flag = true
+		} else if args.LastLogTerm == LastLogTerm {
+			if args.LastLogIndex >= len(rf.Log)-1 {
+				up_to_date_flag = true
+			}
+		}
+		if up_to_date_flag {
 			rf.VotedFor = args.CandidateId
 			reply.VoteGranted = true
 			DPrintf(0, "%d vote for %d, %t", rf.me, args.CandidateId, reply.VoteGranted)
