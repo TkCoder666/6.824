@@ -279,13 +279,13 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.ToFollowerCheck(args.Term)
 	reply.Term = rf.CurrentTerm
 	reply.VoteGranted = false
-	DPrintf(1, "rf.VotedFor %v rf.CurrentTerm %v len(rf.Log) %v args.Term %v args.CandidateId %v args.LastLogTerm %v args.LastLogIndex %v",
-		rf.VotedFor, rf.CurrentTerm, len(rf.Log), args.Term, args.CandidateId, args.LastLogTerm, args.LastLogIndex)
+	DPrintf(0, "rf.me %v rf.VotedFor %v rf.CurrentTerm %v len(rf.Log) %v args.Term %v args.CandidateId %v args.LastLogTerm %v args.LastLogIndex %v",
+		rf.me, rf.VotedFor, rf.CurrentTerm, len(rf.Log), args.Term, args.CandidateId, args.LastLogTerm, args.LastLogIndex)
 	if args.Term < rf.CurrentTerm {
 		return
 	}
 	if rf.VotedFor == -1 || rf.VotedFor == args.CandidateId {
-		if args.LastLogTerm >= rf.GetLogEnrtyTerm(len(rf.Log)-1) && args.LastLogIndex >= len(rf.Log)-1 {
+		if args.LastLogTerm > rf.GetLogEnrtyTerm(len(rf.Log)-1) || (args.LastLogTerm == rf.GetLogEnrtyTerm(len(rf.Log)-1) && args.LastLogIndex >= len(rf.Log)-1) {
 			rf.VotedFor = args.CandidateId
 			reply.VoteGranted = true
 			DPrintf(0, "%d vote for %d, %t", rf.me, args.CandidateId, reply.VoteGranted)
@@ -547,9 +547,9 @@ func (rf *Raft) DealAppendEntriesReply() {
 				rf.mu.Unlock()
 			}
 			if len(args.Entries) > 0 {
-				DPrintf(0, "%d send entries to %d with Term %v begin index %v len %v and entries %v", rf.me, serverId, rf.CurrentTerm, args.PrevLogIndex+1, len(args.Entries), args.Entries)
-				DPrintf(0, "%d deal append entries reply from %d with Success %v and len %v ", rf.me, serverId, reply.Success, len(args.Entries))
-				DPrintf(0, "MatchIndex %v NextIndex %v", rf.MatchIndex, rf.NextIndex)
+				DPrintf(1, "%d send entries to %d with Term %v begin index %v len %v and entries %v", rf.me, serverId, rf.CurrentTerm, args.PrevLogIndex+1, len(args.Entries), args.Entries)
+				DPrintf(1, "%d deal append entries reply from %d with Success %v and len %v ", rf.me, serverId, reply.Success, len(args.Entries))
+				DPrintf(1, "MatchIndex %v NextIndex %v", rf.MatchIndex, rf.NextIndex)
 			}
 			time.Sleep(time.Millisecond * 10)
 		}
