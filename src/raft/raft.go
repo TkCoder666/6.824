@@ -373,7 +373,7 @@ func (rf *Raft) AppendLogEntry(command interface{}) {
 	rf.Log = append(rf.Log, LogEntry{Term: rf.CurrentTerm, Command: command, Index: len(rf.Log)})
 	rf.NextIndex[rf.me] = len(rf.Log) //TODO:leader's is right
 	rf.MatchIndex[rf.me] = len(rf.Log) - 1
-	rf.ResetElectionTimer()
+	// rf.ResetElectionTimer()
 }
 
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
@@ -516,11 +516,13 @@ func (rf *Raft) DealVoteReply() {
 			if len(rf.VoteReplyCh) == 0 {
 				continue
 			}
-			reply := <-rf.VoteReplyCh
-			if reply.VoteGranted {
-				rf.mu.Lock()
-				rf.VoteCount++
-				rf.mu.Unlock()
+			for len(rf.VoteReplyCh) > 0 {
+				reply := <-rf.VoteReplyCh
+				if reply.VoteGranted {
+					rf.mu.Lock()
+					rf.VoteCount++
+					rf.mu.Unlock()
+				}
 			}
 			time.Sleep(time.Millisecond * 10)
 		}
@@ -539,26 +541,28 @@ func (rf *Raft) DealAppendEntriesReply() {
 			if len(rf.AppendEntriesRpcCh) == 0 {
 				continue
 			}
-			rpc_enrty := <-rf.AppendEntriesRpcCh
-			args := rpc_enrty.Args
-			reply := rpc_enrty.Reply
-			serverId := rpc_enrty.ServerId
-			if reply.Success {
-				rf.mu.Lock()
-				rf.MatchIndex[serverId] = args.PrevLogIndex + len(args.Entries)
-				rf.NextIndex[serverId] = rf.MatchIndex[serverId] + 1
-				rf.mu.Unlock()
-			} else {
-				rf.mu.Lock()
-				if rf.NextIndex[serverId] > 1 && reply.Reach { //!wrong here
-					rf.NextIndex[serverId]--
+			for len(rf.AppendEntriesRpcCh) > 0 {
+				rpc_enrty := <-rf.AppendEntriesRpcCh
+				args := rpc_enrty.Args
+				reply := rpc_enrty.Reply
+				serverId := rpc_enrty.ServerId
+				if reply.Success {
+					rf.mu.Lock()
+					rf.MatchIndex[serverId] = args.PrevLogIndex + len(args.Entries)
+					rf.NextIndex[serverId] = rf.MatchIndex[serverId] + 1
+					rf.mu.Unlock()
+				} else {
+					rf.mu.Lock()
+					if rf.NextIndex[serverId] > 1 && reply.Reach { //!wrong here
+						rf.NextIndex[serverId]--
+					}
+					rf.mu.Unlock()
 				}
-				rf.mu.Unlock()
-			}
-			if len(args.Entries) > 0 {
-				DPrintf(1, "%d send entries to %d with Term %v begin index %v len %v and entries %v", rf.me, serverId, rf.CurrentTerm, args.PrevLogIndex+1, len(args.Entries), args.Entries)
-				DPrintf(1, "%d deal append entries reply from %d with Success %v and len %v ", rf.me, serverId, reply.Success, len(args.Entries))
-				DPrintf(1, "MatchIndex %v NextIndex %v", rf.MatchIndex, rf.NextIndex)
+				if len(args.Entries) > 0 {
+					DPrintf(1, "%d send entries to %d with Term %v begin index %v len %v and entries %v", rf.me, serverId, rf.CurrentTerm, args.PrevLogIndex+1, len(args.Entries), args.Entries)
+					DPrintf(1, "%d deal append entries reply from %d with Success %v and len %v ", rf.me, serverId, reply.Success, len(args.Entries))
+					DPrintf(1, "MatchIndex %v NextIndex %v", rf.MatchIndex, rf.NextIndex)
+				}
 			}
 			time.Sleep(time.Millisecond * 10)
 		}
@@ -610,6 +614,7 @@ func (rf *Raft) ticker() {
 			}
 		}
 		rf.mu.Unlock()
+
 		switch rf.Stage {
 		case FOLLOWER:
 			if rf.IsTimeout() {
@@ -634,6 +639,7 @@ func (rf *Raft) ticker() {
 		case LEADER:
 
 		}
+		time.Sleep(time.Millisecond * 10)
 	}
 }
 
