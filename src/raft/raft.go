@@ -132,6 +132,7 @@ func (rf *Raft) RequestAppendEntries(args *RequestAppendEntriesArgs, reply *Requ
 		reply.Success = false
 		return
 	} else {
+		rf.ResetElectionTimer()
 		if args.PrevLogIndex >= len(rf.Log) {
 			reply.Success = false
 			return
@@ -141,7 +142,6 @@ func (rf *Raft) RequestAppendEntries(args *RequestAppendEntriesArgs, reply *Requ
 				return
 			} else {
 				DPrintf(1, "server %d receive append entries from leader %d", rf.me, args.LeaderId)
-				rf.ResetElectionTimer()
 				reply.Success = true
 				startindex := args.PrevLogIndex + 1
 				index := startindex
@@ -294,6 +294,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 				up_to_date_flag = true
 			}
 		}
+		DPrintf(0, "rf.LastLogTerm %v len(rf.Log)-1 %v", LastLogTerm, len(rf.Log)-1)
 		if up_to_date_flag {
 			rf.VotedFor = args.CandidateId
 			reply.VoteGranted = true
@@ -441,6 +442,9 @@ func (rf *Raft) StartElection() {
 		if i == rf.me {
 			continue
 		}
+		if rf.Stage != CANDIDATE {
+			return
+		}
 		go func(server int) {
 			reply := &RequestVoteReply{}
 			rf.sendRequestVote(server, &RequestVoteArgs{
@@ -474,6 +478,9 @@ func (rf *Raft) SendAppendEntriesToServer(server int) {
 	// if server == (rf.me+1)%len(rf.peers) && len(sending_entries) > 0 {
 	// 	DPrintf(0, "%d send to disconnected server %d,nextindex:%d,len:%d,entries:%v", rf.me, server, target_nextindex, len(sending_entries), sending_entries)
 	// }
+	if rf.Stage != LEADER {
+		return
+	}
 	go rf.sendAppendEntries(server, &RequestAppendEntriesArgs{
 		Term:         rf.CurrentTerm,
 		LeaderId:     rf.me,
@@ -612,6 +619,7 @@ func (rf *Raft) ticker() {
 				Command:      rf.Log[rf.LastApplied].Command,
 				CommandIndex: rf.LastApplied,
 			}
+			DPrintf(1, "%d apply log index %v log term %v", rf.me, rf.LastApplied, rf.Log[rf.LastApplied].Term)
 		}
 		rf.mu.Unlock()
 
@@ -666,7 +674,7 @@ func (rf *Raft) ticker() {
 // 	Isleader bool
 func (rf *Raft) InitNextAndMatchIndex() {
 	for i := 0; i < len(rf.peers); i++ {
-		rf.NextIndex[i] = len(rf.Log) //!>=0
+		rf.NextIndex[i] = len(rf.Log)
 		rf.MatchIndex[i] = 0
 	}
 }
