@@ -110,9 +110,11 @@ type RequestAppendEntriesArgs struct {
 
 type RequestAppendEntriesReply struct {
 	// Your data here (2A).\
-	Term    int
-	Success bool
-	Reach   bool
+	Term          int
+	Success       bool
+	Reach         bool
+	ConflictIndex int
+	ConflictTerm  int
 }
 
 // func (rf *Raft) TimerInvalid() {
@@ -135,10 +137,19 @@ func (rf *Raft) RequestAppendEntries(args *RequestAppendEntriesArgs, reply *Requ
 		rf.ResetElectionTimer()
 		if args.PrevLogIndex >= len(rf.Log) {
 			reply.Success = false
+			reply.ConflictIndex = len(rf.Log)
+			reply.ConflictTerm = -1
 			return
 		} else {
 			if rf.GetLogEnrtyTerm(args.PrevLogIndex) != args.PrevLogTerm { //TODO:error for GetLogEnrtyTerm but it's strange
 				reply.Success = false
+				reply.ConflictTerm = rf.GetLogEnrtyTerm(args.PrevLogIndex)
+				for i := args.PrevLogIndex; i >= 1; i-- {
+					if rf.GetLogEnrtyTerm(i) != reply.ConflictTerm {
+						break
+					}
+					reply.ConflictIndex = i
+				}
 				return
 			} else {
 				DPrintf(1, "server %d receive append entries from leader %d", rf.me, args.LeaderId)
@@ -561,8 +572,20 @@ func (rf *Raft) DealAppendEntriesReply() {
 					rf.mu.Unlock()
 				} else {
 					rf.mu.Lock()
-					if rf.NextIndex[serverId] > 1 && reply.Reach { //!wrong here
-						rf.NextIndex[serverId]--
+					if rf.NextIndex[serverId] > 1 && reply.Reach {
+						if reply.ConflictTerm == -1 {
+							rf.NextIndex[serverId] = reply.ConflictIndex
+						} else if rf.GetLogEnrtyTerm(reply.ConflictIndex) != reply.ConflictTerm {
+							rf.NextIndex[serverId] = reply.ConflictIndex
+						} else if rf.GetLogEnrtyTerm(reply.ConflictIndex) == reply.ConflictTerm {
+							lastIndexWithTerm := reply.ConflictIndex
+							for ; lastIndexWithTerm < len(rf.Log); lastIndexWithTerm++ {
+								if rf.GetLogEnrtyTerm(lastIndexWithTerm) != reply.ConflictTerm {
+									break
+								}
+							}
+							rf.NextIndex[serverId] = lastIndexWithTerm
+						}
 					}
 					rf.mu.Unlock()
 				}
