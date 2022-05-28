@@ -386,7 +386,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := (rf.Stage == LEADER)
 	rf.mu.Unlock()
 	if isLeader {
-		rf.AppendLogEntry(command)
+		rf.AppendLogEntry(command) //!return only after the cmd is exactly append to the logs
 	}
 	return index, term, isLeader
 }
