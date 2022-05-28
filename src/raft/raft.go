@@ -20,12 +20,14 @@ package raft
 import (
 	//	"bytes"
 
+	"bytes"
 	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	//	"6.824/labgob"
+	"6.824/labgob"
 	"6.824/labrpc"
 )
 
@@ -68,6 +70,8 @@ type AppendEntriesRpc struct {
 	Args     *RequestAppendEntriesArgs
 	Reply    *RequestAppendEntriesReply
 }
+type RaftPersister struct {
+}
 
 //
 // A Go object implementing a single Raft peer.
@@ -94,7 +98,8 @@ type Raft struct {
 	NextIndex  []int
 	MatchIndex []int
 
-	DeadLine time.Time
+	DeadLine      time.Time
+	raftPersister *RaftPersister
 	// Your data here (2A, 2B).
 }
 
@@ -163,6 +168,7 @@ func (rf *Raft) RequestAppendEntries(args *RequestAppendEntriesArgs, reply *Requ
 					}
 				}
 				rf.Log = append(rf.Log, args.Entries[index-args.PrevLogIndex-1:]...)
+				rf.persist()
 				if args.LeaderCommit > rf.CommitIndex {
 					rf.CommitIndex = min(args.LeaderCommit, len(rf.Log)-1)
 				}
@@ -195,15 +201,78 @@ func (rf *Raft) GetState() (int, bool) {
 // where it can later be retrieved after a crash and restart.
 // see paper's Figure 2 for a description of what should be persistent.
 //
+
+const statePersistOffset int = 100
+
+type RaftPersistState struct {
+	CurrentTerm int
+	VotedFor    int
+}
+
+func (rp *RaftPersister) serializeState(rf *Raft) []byte {
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	err := e.Encode(RaftPersistState{
+		CurrentTerm: rf.CurrentTerm,
+		VotedFor:    rf.VotedFor,
+	})
+	if err != nil {
+		panic(err)
+	}
+	return w.Bytes()
+}
+
+func (rp *RaftPersister) serializeLog(rf *Raft) []byte {
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	err := e.Encode(rf.Log)
+	if err != nil {
+		panic(err)
+	}
+	return w.Bytes()
+}
+
+func (rp *RaftPersister) persist(rf *Raft, persister *Persister) {
+	stateBytes := rp.serializeState(rf)
+	if len(stateBytes) > statePersistOffset {
+		panic("serialized state byte count more than manually set boundary")
+	}
+	logBytes := rp.serializeLog(rf)
+	image := make([]byte, statePersistOffset+len(logBytes))
+	for i, b := range stateBytes {
+		image[i] = b
+	}
+	for i, b := range logBytes {
+		image[i+statePersistOffset] = b
+	}
+	persister.SaveRaftState(image)
+}
+
 func (rf *Raft) persist() {
-	// Your code here (2C).
-	// Example:
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// data := w.Bytes()
-	// rf.persister.SaveRaftState(data)
+	rf.raftPersister.persist(rf, rf.persister)
+}
+
+func (rp *RaftPersister) loadState(rf *Raft, buffer []byte, offset int) {
+	r := bytes.NewBuffer(buffer[offset:])
+	d := labgob.NewDecoder(r)
+	decoded := RaftPersistState{}
+	err := d.Decode(&decoded)
+	if err != nil {
+		panic(err)
+	}
+	rf.CurrentTerm = decoded.CurrentTerm
+	rf.VotedFor = decoded.VotedFor
+}
+
+func (rp *RaftPersister) loadLog(rf *Raft, buffer []byte, offset int) {
+	r := bytes.NewBuffer(buffer[offset:])
+	d := labgob.NewDecoder(r)
+	decoded := make([]LogEntry, 0)
+	err := d.Decode(&decoded)
+	if err != nil {
+		panic(err)
+	}
+	rf.Log = decoded
 }
 
 //
@@ -226,6 +295,8 @@ func (rf *Raft) readPersist(data []byte) {
 	//   rf.xxx = xxx
 	//   rf.yyy = yyy
 	// }
+	rf.raftPersister.loadState(rf, data, 0)
+	rf.raftPersister.loadLog(rf, data, statePersistOffset)
 }
 
 //
@@ -277,6 +348,7 @@ func (rf *Raft) ToFollowerCheck(term int) {
 		rf.VotedFor = -1
 		rf.Stage = FOLLOWER
 		rf.VoteCount = 0
+		rf.persist()
 	}
 }
 
@@ -310,6 +382,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			rf.VotedFor = args.CandidateId
 			reply.VoteGranted = true
 			DPrintf(0, "%d vote for %d, %t", rf.me, args.CandidateId, reply.VoteGranted)
+			rf.persist()
 			rf.ResetElectionTimer()
 		}
 	}
@@ -398,6 +471,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.mu.Unlock()
 	if isLeader {
 		rf.AppendLogEntry(command) //!return only after the cmd is exactly append to the logs
+		rf.persist()
 	}
 	return index, term, isLeader
 }
@@ -450,6 +524,7 @@ func (rf *Raft) StartElection() {
 	rf.VotedFor = rf.me
 	rf.ResetElectionTimer()
 	rf.mu.Unlock()
+	rf.persist()
 	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
 			continue
@@ -537,6 +612,9 @@ func (rf *Raft) DealVoteReply() {
 			}
 			for len(rf.VoteReplyCh) > 0 {
 				reply := <-rf.VoteReplyCh
+				if reply.Term != rf.CurrentTerm {
+					continue
+				}
 				if reply.VoteGranted {
 					rf.mu.Lock()
 					rf.VoteCount++
@@ -565,6 +643,9 @@ func (rf *Raft) DealAppendEntriesReply() {
 				args := rpc_enrty.Args
 				reply := rpc_enrty.Reply
 				serverId := rpc_enrty.ServerId
+				if reply.Term != args.Term || !reply.Reach || reply.Term != rf.CurrentTerm {
+					continue
+				}
 				if reply.Success {
 					rf.mu.Lock()
 					rf.MatchIndex[serverId] = args.PrevLogIndex + len(args.Entries)
@@ -702,7 +783,9 @@ func (rf *Raft) InitNextAndMatchIndex() {
 		rf.MatchIndex[i] = 0
 	}
 }
-
+func makeRaftPersister() *RaftPersister {
+	return &RaftPersister{}
+}
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
 	rf := &Raft{}
@@ -726,6 +809,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.MatchIndex = make([]int, len(peers))
 	rf.InitNextAndMatchIndex()
 	// initialize from state persisted before a crash
+	rf.raftPersister = makeRaftPersister()
 	rf.readPersist(persister.ReadRaftState())
 
 	// start ticker goroutine to start elections
