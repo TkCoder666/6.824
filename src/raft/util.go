@@ -14,7 +14,7 @@ func DPrintf(verbose int, format string, a ...interface{}) (n int, err error) {
 
 //Const values
 const (
-	HeartBeatInterval  = 200
+	HeartBeatInterval  = 150
 	ElectionTimeoutMin = 250
 	ElectionTimeoutMax = 450
 	LogEmptyLen        = 1

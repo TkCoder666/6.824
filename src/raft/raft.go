@@ -372,6 +372,7 @@ func (rf *Raft) AppendLogEntry(command interface{}) {
 		return
 	}
 	rf.Log = append(rf.Log, LogEntry{Term: rf.CurrentTerm, Command: command, Index: len(rf.Log)})
+	DPrintf(0, "rf.me %v after appending cmd %v with len(rf.log) %v", rf.me, command, len(rf.Log))
 	rf.NextIndex[rf.me] = len(rf.Log) //TODO:leader's is right
 	rf.MatchIndex[rf.me] = len(rf.Log) - 1
 	// rf.ResetElectionTimer()
@@ -385,7 +386,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := (rf.Stage == LEADER)
 	rf.mu.Unlock()
 	if isLeader {
-		go rf.AppendLogEntry(command)
+		rf.AppendLogEntry(command)
 	}
 	return index, term, isLeader
 }
