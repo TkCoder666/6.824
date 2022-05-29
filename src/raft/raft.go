@@ -164,6 +164,7 @@ func (rf *Raft) RequestAppendEntries(args *RequestAppendEntriesArgs, reply *Requ
 				for ; index-args.PrevLogIndex-1 < len(args.Entries) && index < len(rf.Log); index++ {
 					if rf.Log[index].Term != args.Entries[index-args.PrevLogIndex-1].Term {
 						rf.Log = rf.Log[:index]
+						rf.persist()
 						break
 					}
 				}
@@ -643,7 +644,7 @@ func (rf *Raft) DealAppendEntriesReply() {
 				args := rpc_enrty.Args
 				reply := rpc_enrty.Reply
 				serverId := rpc_enrty.ServerId
-				if reply.Term != args.Term || !reply.Reach || reply.Term != rf.CurrentTerm {
+				if args.Term != reply.Term || !reply.Reach || reply.Term != rf.CurrentTerm {
 					continue
 				}
 				if reply.Success {
