@@ -20,14 +20,12 @@ package raft
 import (
 	//	"bytes"
 
-	"bytes"
 	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	//	"6.824/labgob"
-	"6.824/labgob"
 	"6.824/labrpc"
 )
 
@@ -203,77 +201,8 @@ func (rf *Raft) GetState() (int, bool) {
 // see paper's Figure 2 for a description of what should be persistent.
 //
 
-const statePersistOffset int = 100
-
-type RaftPersistState struct {
-	CurrentTerm int
-	VotedFor    int
-}
-
-func (rp *RaftPersister) serializeState(rf *Raft) []byte {
-	w := new(bytes.Buffer)
-	e := labgob.NewEncoder(w)
-	err := e.Encode(RaftPersistState{
-		CurrentTerm: rf.CurrentTerm,
-		VotedFor:    rf.VotedFor,
-	})
-	if err != nil {
-		panic(err)
-	}
-	return w.Bytes()
-}
-
-func (rp *RaftPersister) serializeLog(rf *Raft) []byte {
-	w := new(bytes.Buffer)
-	e := labgob.NewEncoder(w)
-	err := e.Encode(rf.Log)
-	if err != nil {
-		panic(err)
-	}
-	return w.Bytes()
-}
-
-func (rp *RaftPersister) persist(rf *Raft, persister *Persister) {
-	stateBytes := rp.serializeState(rf)
-	if len(stateBytes) > statePersistOffset {
-		panic("serialized state byte count more than manually set boundary")
-	}
-	logBytes := rp.serializeLog(rf)
-	image := make([]byte, statePersistOffset+len(logBytes))
-	for i, b := range stateBytes {
-		image[i] = b
-	}
-	for i, b := range logBytes {
-		image[i+statePersistOffset] = b
-	}
-	persister.SaveRaftState(image)
-}
-
 func (rf *Raft) persist() {
 	rf.raftPersister.persist(rf, rf.persister)
-}
-
-func (rp *RaftPersister) loadState(rf *Raft, buffer []byte, offset int) {
-	r := bytes.NewBuffer(buffer[offset:])
-	d := labgob.NewDecoder(r)
-	decoded := RaftPersistState{}
-	err := d.Decode(&decoded)
-	if err != nil {
-		panic(err)
-	}
-	rf.CurrentTerm = decoded.CurrentTerm
-	rf.VotedFor = decoded.VotedFor
-}
-
-func (rp *RaftPersister) loadLog(rf *Raft, buffer []byte, offset int) {
-	r := bytes.NewBuffer(buffer[offset:])
-	d := labgob.NewDecoder(r)
-	decoded := make([]LogEntry, 0)
-	err := d.Decode(&decoded)
-	if err != nil {
-		panic(err)
-	}
-	rf.Log = decoded
 }
 
 //
@@ -317,6 +246,7 @@ func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int,
 // that index. Raft should now trim its log as much as possible.
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (2D).
+	//!how to do it?
 
 }
 
